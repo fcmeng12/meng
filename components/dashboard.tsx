@@ -96,7 +96,7 @@ function Footer({ snapshot }: { snapshot: MarketSnapshot }) {
   );
 }
 
-function CandidateCard({ stock, rank }: { stock: StockCandidate; rank: number }) {
+function CandidateCard({ stock, rank, priceLabel }: { stock: StockCandidate; rank: number; priceLabel: string }) {
   const closeSeries = stock.kline60.map((point) => point.close);
   return (
     <article className="stock-card">
@@ -117,7 +117,7 @@ function CandidateCard({ stock, rank }: { stock: StockCandidate; rank: number })
       </div>
 
       <div className="quote-row real-quote-row">
-        <div><span className="eyelabel">最新可用收盘价</span><strong>¥ {formatPrice(stock.price)}</strong></div>
+        <div><span className="eyelabel">{priceLabel}</span><strong>¥ {formatPrice(stock.price)}</strong></div>
         <Sparkline values={closeSeries.slice(-30)} positive={stock.changePct >= 0} />
         <Change value={stock.changePct} />
       </div>
@@ -230,7 +230,7 @@ export function Dashboard({ snapshot }: { snapshot: MarketSnapshot }) {
         </section>
 
         <section className="indices-section" aria-labelledby="market-title">
-          <div className="section-heading"><div><span className="section-index">01</span><div><p>MARKET OVERVIEW</p><h2 id="market-title">核心指数</h2></div></div><span className="section-note">{snapshot.source === "hybrid" ? "腾讯指数延时行情 · 股票为 Tushare 收盘数据" : "Tushare Pro 最近可用收盘数据"}</span></div>
+          <div className="section-heading"><div><span className="section-index">01</span><div><p>MARKET OVERVIEW</p><h2 id="market-title">核心指数</h2></div></div><span className="section-note">{snapshot.source === "tencent" ? "腾讯指数延时行情 · 非逐秒实时" : snapshot.source === "hybrid" ? "腾讯指数延时行情 · 股票为 Tushare 收盘数据" : "Tushare Pro 最近可用收盘数据"}</span></div>
           <div className="index-grid">
             {snapshot.indices.map((index) => (
               <article className="index-card" key={index.code}>
@@ -241,7 +241,7 @@ export function Dashboard({ snapshot }: { snapshot: MarketSnapshot }) {
             <article className="index-card market-breadth-card">
               <div className="breadth-numbers"><div><span>上涨</span><strong className="red">{snapshot.breadth.advances}</strong></div><div><span>下跌</span><strong className="green">{snapshot.breadth.declines}</strong></div><div><span>平盘</span><strong>{snapshot.breadth.flat}</strong></div></div>
               <div className="split-bar"><i style={{ width: `${advanceRatio}%` }} /><em /></div>
-              <div className="turnover-line"><span>两市成交额</span><strong>{snapshot.breadth.turnoverBillion.toFixed(1)} <small>亿元</small></strong><b>较前日 {snapshot.breadth.turnoverChangePct >= 0 ? "+" : ""}{snapshot.breadth.turnoverChangePct}%</b></div>
+              <div className="turnover-line"><span>两市成交额</span><strong>{snapshot.breadth.turnoverBillion.toFixed(1)} <small>亿元</small></strong><b>{snapshot.source === "tencent" ? "延时累计" : `较前日 ${snapshot.breadth.turnoverChangePct >= 0 ? "+" : ""}${snapshot.breadth.turnoverChangePct}%`}</b></div>
             </article>
           </div>
         </section>
@@ -269,7 +269,7 @@ export function Dashboard({ snapshot }: { snapshot: MarketSnapshot }) {
             <div className="risk-filter" aria-label="风险筛选">{(["全部", "低", "中", "高"] as const).map((item) => <button key={item} onClick={() => setRisk(item)} className={risk === item ? "active" : ""}>{item === "全部" ? "全部风险" : `${item}风险`}</button>)}</div>
           </div>
           <div className="result-line"><span>配置池 {snapshot.poolSize} 只，评分达标 <b>{filteredStocks.length}</b> 只</span><small>入池阈值：综合评分 ≥ 68</small></div>
-          {filteredStocks.length ? <div className="stock-grid">{filteredStocks.map((stock, index) => <CandidateCard key={`${stock.code}.${stock.exchange}`} stock={stock} rank={index + 1} />)}</div> : <div className="empty-state"><SearchIcon size={28} /><h3>当前没有匹配的候选标的</h3><p>可能没有股票达到68分，或当前筛选条件过窄。</p></div>}
+          {filteredStocks.length ? <div className="stock-grid">{filteredStocks.map((stock, index) => <CandidateCard key={`${stock.code}.${stock.exchange}`} stock={stock} rank={index + 1} priceLabel={snapshot.source === "tencent" ? "最新延时价格" : "最新可用收盘价"} />)}</div> : <div className="empty-state"><SearchIcon size={28} /><h3>当前没有匹配的候选标的</h3><p>可能没有股票达到68分，或当前筛选条件过窄。</p></div>}
         </section>
       </div>
       <Footer snapshot={snapshot} />

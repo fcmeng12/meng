@@ -1,7 +1,7 @@
 import { unstable_cache } from "next/cache";
-import { queryTencentIndex } from "./tencent-index";
+import { queryTencentIndex, queryTencentStock, type TencentSeriesResult } from "./tencent-index";
 import { queryTushare } from "./tushare-client";
-import type { DailyBar, TushareDailyRow, TushareStockBasicRow } from "./types";
+import type { TushareDailyRow, TushareStockBasicRow } from "./types";
 
 const DAILY_FIELDS = [
   "ts_code", "trade_date", "open", "high", "low", "close",
@@ -12,6 +12,10 @@ const STOCK_BASIC_FIELDS = ["ts_code", "symbol", "name", "industry", "market", "
 
 export interface CachedPayload<T> {
   rows: T[];
+  fetchedAt: string;
+}
+
+export interface CachedTencentSeries extends TencentSeriesResult {
   fetchedAt: string;
 }
 
@@ -31,9 +35,21 @@ export const getCachedIndexDaily = unstable_cache(
 );
 
 export const getCachedTencentIndexDaily = unstable_cache(
-  async (tsCode: string) => withFetchTime<DailyBar>(queryTencentIndex(tsCode)),
-  ["tencent-index-daily-v1"],
+  async (tsCode: string): Promise<CachedTencentSeries> => ({
+    ...await queryTencentIndex(tsCode),
+    fetchedAt: new Date().toISOString(),
+  }),
+  ["tencent-index-daily-v2"],
   { revalidate: 180 },
+);
+
+export const getCachedTencentStockDaily = unstable_cache(
+  async (tsCode: string): Promise<CachedTencentSeries> => ({
+    ...await queryTencentStock(tsCode),
+    fetchedAt: new Date().toISOString(),
+  }),
+  ["tencent-stock-daily-v1"],
+  { revalidate: 1800 },
 );
 
 export const getCachedPoolDaily = unstable_cache(

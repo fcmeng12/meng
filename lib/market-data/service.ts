@@ -1,13 +1,15 @@
-import { INDEX_CONFIG, getConfiguredStockPool } from "./config";
+import { INDEX_CONFIG, getConfiguredIndustry, getConfiguredStockPool } from "./config";
 import {
   getCachedIndexDaily,
   getCachedMarketDay,
   getCachedPoolDaily,
   getCachedStockBasic,
   getCachedTencentIndexDaily,
+  getCachedTencentStockDaily,
 } from "./cached-source";
 import { clamp, createCandidateDraft, finalizeCandidate, type CandidateDraft } from "./scoring";
 import { hasTushareToken, MarketDataError } from "./tushare-client";
+import type { TencentMarketStats } from "./tencent-index";
 import type {
   DailyBar,
   IndexQuote,
@@ -68,6 +70,7 @@ interface IndexSeries {
   rows: DailyBar[];
   fetchedAt: string;
   source: "tushare" | "tencent";
+  marketStats: TencentMarketStats | null;
 }
 
 async function getIndexSeries(tsCode: string, startDate: string, endDate: string): Promise<IndexSeries> {
@@ -77,6 +80,7 @@ async function getIndexSeries(tsCode: string, startDate: string, endDate: string
       rows: payload.rows.map(toDailyBar),
       fetchedAt: payload.fetchedAt,
       source: "tushare",
+      marketStats: null,
     };
   } catch (tushareError) {
     console.warn(
@@ -88,8 +92,81 @@ async function getIndexSeries(tsCode: string, startDate: string, endDate: string
   }
 }
 
-function createInsight(session: SessionKey, tradeDate: string): SessionInsight {
+interface PoolSeries {
+  rows: DailyBar[];
+  names: Map<string, string>;
+  fetchedAt: string;
+  source: "tushare" | "tencent";
+}
+
+async function getPoolSeries(tsCodes: string[], startDate: string, endDate: string): Promise<PoolSeries> {
+  try {
+    const payload = await getCachedPoolDaily(tsCodes.join(","), startDate, endDate);
+    if (!payload.rows.length) throw new Error("Tushare 股票日线未返回数据");
+    return {
+      rows: payload.rows.map(toDailyBar),
+      names: new Map(),
+      fetchedAt: payload.fetchedAt,
+      source: "tushare",
+    };
+  } catch (tushareError) {
+    console.warn(
+      "[market-data] Tushare daily unavailable; using Tencent stock data.",
+      tushareError instanceof Error ? tushareError.message : "unknown error",
+    );
+    const payloads = await Promise.all(tsCodes.map((tsCode) => getCachedTencentStockDaily(tsCode)));
+    if (payloads.some((payload) => payload.rows.length < 60)) {
+      throw new Error("腾讯股票历史数据不足 60 个交易日");
+    }
+    return {
+      rows: payloads.flatMap((payload) => payload.rows),
+      names: new Map(payloads.map((payload, index) => [tsCodes[index], payload.name])),
+      fetchedAt: payloads.map((payload) => payload.fetchedAt).sort().at(-1)!,
+      source: "tencent",
+    };
+  }
+}
+
+async function getStockBasicsSafely() {
+  try {
+    return await getCachedStockBasic();
+  } catch (error) {
+    console.warn(
+      "[market-data] Tushare stock_basic unavailable; using configured industry metadata.",
+      error instanceof Error ? error.message : "unknown error",
+    );
+    return { rows: [], fetchedAt: null };
+  }
+}
+
+function createInsight(session: SessionKey, tradeDate: string, delayedStocks = false): SessionInsight {
   const date = displayDate(tradeDate);
+  if (delayedStocks) {
+    const delayedInsights: Record<SessionKey, SessionInsight> = {
+      premarket: {
+        key: "premarket",
+        eyebrow: `盘前研判 · 基于 ${date} 最近可用行情`,
+        title: "先看真实结构，再等待开盘确认",
+        description: "基于腾讯真实日线与延时行情计算趋势、量能、均线和风险指标；数据不是逐秒实时行情。",
+        focus: ["核对开盘偏离幅度", "观察行业强弱延续", "预设技术失效条件"],
+      },
+      intraday: {
+        key: "intraday",
+        eyebrow: `盘中参考 · ${date} 延时行情`,
+        title: "用真实延时行情跟踪候选结构",
+        description: "当前股票和指数来自腾讯延时行情，不是逐秒实时数据；评分仍基于至少 60 个交易日真实 K 线。",
+        focus: ["留意数据延时", "等待价格与量能确认", "控制单笔研究风险"],
+      },
+      afterhours: {
+        key: "afterhours",
+        eyebrow: `盘后复盘 · ${date} 最近行情`,
+        title: "用真实日线复核趋势、量能与风险",
+        description: "候选池由真实 K 线动态评分生成，用于后续研究准备，并非直接交易信号。",
+        focus: ["复核均线结构", "拆解成交量变化", "更新支撑与压力区间"],
+      },
+    };
+    return delayedInsights[session];
+  }
   const insights: Record<SessionKey, SessionInsight> = {
     premarket: {
       key: "premarket",
@@ -211,6 +288,32 @@ function buildBreadth(todayRows: TushareDailyRow[], previousRows: TushareDailyRo
   };
 }
 
+function buildTencentBreadth(indexSeries: IndexSeries[]): MarketBreadth {
+  const marketStats = indexSeries.slice(0, 2).map((series) => series.marketStats).filter(
+    (stats): stats is TencentMarketStats => stats !== null,
+  );
+  if (!marketStats.length) throw new Error("腾讯市场涨跌家数暂时不可用");
+
+  const advances = marketStats.reduce((sum, stats) => sum + stats.advances, 0);
+  const declines = marketStats.reduce((sum, stats) => sum + stats.declines, 0);
+  const flat = marketStats.reduce((sum, stats) => sum + stats.flat, 0);
+  const total = advances + declines + flat;
+  const turnover = indexSeries.slice(0, 2).reduce((sum, series) => sum + (series.rows.at(-1)?.amount ?? 0), 0);
+  const advanceRatio = total ? (advances / total) * 100 : 50;
+  const sentimentScore = Math.round(clamp(50 + (advanceRatio - 50) * 0.9));
+  const sentiment = sentimentScore >= 70 ? "积极" : sentimentScore >= 58 ? "偏暖" : sentimentScore >= 45 ? "中性" : "谨慎";
+
+  return {
+    advances,
+    declines,
+    flat,
+    turnoverBillion: round(turnover / 100_000, 1),
+    turnoverChangePct: 0,
+    sentiment,
+    sentimentScore,
+  };
+}
+
 export async function getMarketSnapshot(session: SessionKey): Promise<MarketSnapshot> {
   if (!hasTushareToken()) return failureSnapshot(session, "未配置 TUSHARE_TOKEN");
 
@@ -219,28 +322,42 @@ export async function getMarketSnapshot(session: SessionKey): Promise<MarketSnap
     const indexStartDate = lookbackDate(140);
     const pool = getConfiguredStockPool();
     const poolStartDate = lookbackDate(190);
-    const [indexPayloads, poolPayload, basicPayload] = await Promise.all([
+    const [indexPayloads, poolSeries, basicPayload] = await Promise.all([
       Promise.all(INDEX_CONFIG.map((index) => getIndexSeries(index.code, indexStartDate, endDate))),
-      getCachedPoolDaily(pool.join(","), poolStartDate, endDate),
-      getCachedStockBasic(),
+      getPoolSeries(pool, poolStartDate, endDate),
+      getStockBasicsSafely(),
     ]);
 
     const indexBars = indexPayloads.map((payload) => payload.rows.sort((a, b) => a.tradeDate.localeCompare(b.tradeDate)));
     if (indexBars.some((bars) => bars.length < 21)) throw new Error("指数历史数据不足");
 
-    const poolTradeDates = Array.from(new Set(poolPayload.rows.map((row) => row.trade_date))).sort();
+    const poolTradeDates = Array.from(new Set(poolSeries.rows.map((row) => row.tradeDate))).sort();
     if (poolTradeDates.length < 2) throw new Error("股票池历史数据不足");
     const latestTradeDate = poolTradeDates.at(-1)!;
     const previousTradeDate = poolTradeDates.at(-2)!;
-    const [marketTodayPayload, marketPreviousPayload] = await Promise.all([
-      getCachedMarketDay(latestTradeDate),
-      getCachedMarketDay(previousTradeDate),
-    ]);
+    let breadth: MarketBreadth;
+    let marketFetchedAt: string | null = null;
+    let breadthSource: "tushare" | "tencent" = "tushare";
+    try {
+      const [marketTodayPayload, marketPreviousPayload] = await Promise.all([
+        getCachedMarketDay(latestTradeDate),
+        getCachedMarketDay(previousTradeDate),
+      ]);
+      if (!marketTodayPayload.rows.length) throw new Error("Tushare 全市场日线未返回数据");
+      breadth = buildBreadth(marketTodayPayload.rows, marketPreviousPayload.rows);
+      marketFetchedAt = marketTodayPayload.fetchedAt;
+    } catch (error) {
+      console.warn(
+        "[market-data] Tushare market breadth unavailable; using Tencent market counts.",
+        error instanceof Error ? error.message : "unknown error",
+      );
+      breadth = buildTencentBreadth(indexPayloads);
+      breadthSource = "tencent";
+    }
 
     const basicByCode = new Map(basicPayload.rows.map((row) => [row.ts_code, row]));
     const barsByCode = new Map<string, DailyBar[]>();
-    for (const row of poolPayload.rows) {
-      const bar = toDailyBar(row);
+    for (const bar of poolSeries.rows) {
       const rows = barsByCode.get(bar.tsCode) ?? [];
       rows.push(bar);
       barsByCode.set(bar.tsCode, rows);
@@ -254,8 +371,8 @@ export async function getMarketSnapshot(session: SessionKey): Promise<MarketSnap
       const basic = basicByCode.get(tsCode);
       return createCandidateDraft(
         tsCode,
-        basic?.name ?? tsCode.slice(0, 6),
-        basic?.industry || "其他",
+        poolSeries.names.get(tsCode) ?? basic?.name ?? tsCode.slice(0, 6),
+        basic?.industry || getConfiguredIndustry(tsCode),
         barsByCode.get(tsCode) ?? [],
         benchmarkReturn20,
       );
@@ -283,27 +400,40 @@ export async function getMarketSnapshot(session: SessionKey): Promise<MarketSnap
 
     const updatedAt = [
       ...indexPayloads.map((payload) => payload.fetchedAt),
-      poolPayload.fetchedAt,
-      marketTodayPayload.fetchedAt,
-    ].sort().at(-1)!;
+      poolSeries.fetchedAt,
+      basicPayload.fetchedAt,
+      marketFetchedAt,
+    ].filter((value): value is string => Boolean(value)).sort().at(-1)!;
 
     const usesTencentIndices = indexPayloads.some((payload) => payload.source === "tencent");
+    const usesTencentStocks = poolSeries.source === "tencent";
+    const source = usesTencentStocks
+      ? "tencent"
+      : usesTencentIndices || breadthSource === "tencent" ? "hybrid" : "tushare";
 
     return {
       available: true,
-      source: usesTencentIndices ? "hybrid" : "tushare",
-      sourceLabel: usesTencentIndices ? "Tushare Pro + 腾讯行情 · 真实数据" : "Tushare Pro · 真实行情",
-      dataMode: usesTencentIndices ? "delayed" : "close",
-      dataModeLabel: usesTencentIndices ? "指数延时行情 + 股票收盘数据 · 非逐秒实时" : "收盘数据 · 非逐秒实时",
-      asOf: usesTencentIndices ? `${displayDate(latestTradeDate)} 股票收盘 / 指数延时` : `${displayDate(latestTradeDate)} 收盘`,
+      source,
+      sourceLabel: source === "tencent"
+        ? "腾讯行情 · 真实延时数据（Tushare 权限不足）"
+        : source === "hybrid" ? "Tushare Pro + 腾讯行情 · 真实数据" : "Tushare Pro · 真实行情",
+      dataMode: source === "tushare" ? "close" : "delayed",
+      dataModeLabel: source === "tencent"
+        ? "股票与指数延时行情 · 非逐秒实时"
+        : source === "hybrid" ? "指数延时行情 + 股票收盘数据 · 非逐秒实时" : "收盘数据 · 非逐秒实时",
+      asOf: source === "tencent"
+        ? `${displayDate(latestTradeDate)} 延时行情`
+        : source === "hybrid" ? `${displayDate(latestTradeDate)} 股票收盘 / 指数延时` : `${displayDate(latestTradeDate)} 收盘`,
       updatedAt,
-      statusMessage: usesTencentIndices ? "真实行情连接正常（Tushare 日线 + 腾讯指数）" : "行情接口连接正常",
+      statusMessage: source === "tencent"
+        ? "真实行情连接正常（Tushare 无日线权限，当前使用腾讯延时行情）"
+        : source === "hybrid" ? "真实行情连接正常（Tushare 日线 + 腾讯指数）" : "行情接口连接正常",
       indices,
-      breadth: buildBreadth(marketTodayPayload.rows, marketPreviousPayload.rows),
+      breadth,
       sectors,
       candidates,
       poolSize: pool.length,
-      insight: createInsight(session, latestTradeDate),
+      insight: createInsight(session, latestTradeDate, usesTencentStocks),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : "真实行情数据处理失败";
@@ -328,21 +458,25 @@ export async function getMarketStatus(): Promise<MarketStatus> {
   try {
     const endDate = apiDate(new Date());
     const [stockPayload, indexPayload] = await Promise.all([
-      getCachedPoolDaily("600036.SH", lookbackDate(15), endDate),
+      getPoolSeries(["600036.SH"], lookbackDate(190), endDate),
       getIndexSeries("000001.SH", lookbackDate(140), endDate),
     ]);
     if (!stockPayload.rows.length || !indexPayload.rows.length) throw new Error("真实行情接口未返回数据");
-    const usesTencentIndex = indexPayload.source === "tencent";
+    const source = stockPayload.source === "tencent"
+      ? "tencent"
+      : indexPayload.source === "tencent" ? "hybrid" : "tushare";
     return {
       tokenConfigured: true,
       connected: true,
       lastSuccessAt: [stockPayload.fetchedAt, indexPayload.fetchedAt].sort().at(-1)!,
       isRealData: true,
-      source: usesTencentIndex ? "hybrid" : "tushare",
-      dataMode: usesTencentIndex ? "delayed" : "close",
-      message: usesTencentIndex
-        ? "真实行情连接正常：股票为 Tushare Pro 收盘数据，指数为腾讯延时行情"
-        : "Tushare Pro 连接正常，当前提供收盘数据",
+      source,
+      dataMode: source === "tushare" ? "close" : "delayed",
+      message: source === "tencent"
+        ? "真实行情连接正常：Tushare 日线权限不足，当前股票和指数使用腾讯延时行情"
+        : source === "hybrid"
+          ? "真实行情连接正常：股票为 Tushare Pro 收盘数据，指数为腾讯延时行情"
+          : "Tushare Pro 连接正常，当前提供收盘数据",
     };
   } catch (error) {
     const message = error instanceof MarketDataError ? error.message : "行情接口未返回数据";
