@@ -4,6 +4,7 @@ import {
   getCachedMarketDay,
   getCachedPoolDaily,
   getCachedStockBasic,
+  getCachedTencentIndexDaily,
 } from "./cached-source";
 import { clamp, createCandidateDraft, finalizeCandidate, type CandidateDraft } from "./scoring";
 import { hasTushareToken, MarketDataError } from "./tushare-client";
@@ -61,6 +62,30 @@ function toDailyBar(row: TushareDailyRow): DailyBar {
     volume: number(row.vol),
     amount: number(row.amount),
   };
+}
+
+interface IndexSeries {
+  rows: DailyBar[];
+  fetchedAt: string;
+  source: "tushare" | "tencent";
+}
+
+async function getIndexSeries(tsCode: string, startDate: string, endDate: string): Promise<IndexSeries> {
+  try {
+    const payload = await getCachedIndexDaily(tsCode, startDate, endDate);
+    return {
+      rows: payload.rows.map(toDailyBar),
+      fetchedAt: payload.fetchedAt,
+      source: "tushare",
+    };
+  } catch (tushareError) {
+    console.warn(
+      `[market-data] Tushare index_daily unavailable for ${tsCode}; using Tencent index data.`,
+      tushareError instanceof Error ? tushareError.message : "unknown error",
+    );
+    const payload = await getCachedTencentIndexDaily(tsCode);
+    return { ...payload, source: "tencent" };
+  }
 }
 
 function createInsight(session: SessionKey, tradeDate: string): SessionInsight {
@@ -192,20 +217,22 @@ export async function getMarketSnapshot(session: SessionKey): Promise<MarketSnap
   try {
     const endDate = apiDate(new Date());
     const indexStartDate = lookbackDate(140);
-    const indexPayloads = await Promise.all(
-      INDEX_CONFIG.map((index) => getCachedIndexDaily(index.code, indexStartDate, endDate)),
-    );
-
-    const indexBars = indexPayloads.map((payload) => payload.rows.map(toDailyBar).sort((a, b) => a.tradeDate.localeCompare(b.tradeDate)));
-    if (indexBars.some((bars) => bars.length < 21)) throw new Error("指数历史数据不足");
-
-    const latestTradeDate = indexBars[0].at(-1)!.tradeDate;
-    const previousTradeDate = indexBars[0].at(-2)!.tradeDate;
     const pool = getConfiguredStockPool();
     const poolStartDate = lookbackDate(190);
-    const [poolPayload, basicPayload, marketTodayPayload, marketPreviousPayload] = await Promise.all([
+    const [indexPayloads, poolPayload, basicPayload] = await Promise.all([
+      Promise.all(INDEX_CONFIG.map((index) => getIndexSeries(index.code, indexStartDate, endDate))),
       getCachedPoolDaily(pool.join(","), poolStartDate, endDate),
       getCachedStockBasic(),
+    ]);
+
+    const indexBars = indexPayloads.map((payload) => payload.rows.sort((a, b) => a.tradeDate.localeCompare(b.tradeDate)));
+    if (indexBars.some((bars) => bars.length < 21)) throw new Error("指数历史数据不足");
+
+    const poolTradeDates = Array.from(new Set(poolPayload.rows.map((row) => row.trade_date))).sort();
+    if (poolTradeDates.length < 2) throw new Error("股票池历史数据不足");
+    const latestTradeDate = poolTradeDates.at(-1)!;
+    const previousTradeDate = poolTradeDates.at(-2)!;
+    const [marketTodayPayload, marketPreviousPayload] = await Promise.all([
       getCachedMarketDay(latestTradeDate),
       getCachedMarketDay(previousTradeDate),
     ]);
@@ -219,7 +246,8 @@ export async function getMarketSnapshot(session: SessionKey): Promise<MarketSnap
       barsByCode.set(bar.tsCode, rows);
     }
 
-    const shanghaiBars = indexBars[0];
+    const shanghaiBars = indexBars[0].filter((bar) => bar.tradeDate <= latestTradeDate);
+    if (shanghaiBars.length < 21) throw new Error("指数与股票日线日期无法对齐");
     const benchmarkBase = shanghaiBars.at(-21)!.close;
     const benchmarkReturn20 = ((shanghaiBars.at(-1)!.close / benchmarkBase) - 1) * 100;
     const drafts = pool.map((tsCode) => {
@@ -259,15 +287,17 @@ export async function getMarketSnapshot(session: SessionKey): Promise<MarketSnap
       marketTodayPayload.fetchedAt,
     ].sort().at(-1)!;
 
+    const usesTencentIndices = indexPayloads.some((payload) => payload.source === "tencent");
+
     return {
       available: true,
-      source: "tushare",
-      sourceLabel: "Tushare Pro · 真实行情",
-      dataMode: "close",
-      dataModeLabel: "收盘数据 · 非逐秒实时",
-      asOf: `${displayDate(latestTradeDate)} 收盘`,
+      source: usesTencentIndices ? "hybrid" : "tushare",
+      sourceLabel: usesTencentIndices ? "Tushare Pro + 腾讯行情 · 真实数据" : "Tushare Pro · 真实行情",
+      dataMode: usesTencentIndices ? "delayed" : "close",
+      dataModeLabel: usesTencentIndices ? "指数延时行情 + 股票收盘数据 · 非逐秒实时" : "收盘数据 · 非逐秒实时",
+      asOf: usesTencentIndices ? `${displayDate(latestTradeDate)} 股票收盘 / 指数延时` : `${displayDate(latestTradeDate)} 收盘`,
       updatedAt,
-      statusMessage: "行情接口连接正常",
+      statusMessage: usesTencentIndices ? "真实行情连接正常（Tushare 日线 + 腾讯指数）" : "行情接口连接正常",
       indices,
       breadth: buildBreadth(marketTodayPayload.rows, marketPreviousPayload.rows),
       sectors,
@@ -276,7 +306,7 @@ export async function getMarketSnapshot(session: SessionKey): Promise<MarketSnap
       insight: createInsight(session, latestTradeDate),
     };
   } catch (error) {
-    const message = error instanceof MarketDataError ? error.message : "真实行情数据处理失败";
+    const message = error instanceof Error ? error.message : "真实行情数据处理失败";
     console.error("[market-data] Tushare snapshot failed:", message);
     return failureSnapshot(session, "行情暂时不可用");
   }
@@ -296,16 +326,23 @@ export async function getMarketStatus(): Promise<MarketStatus> {
   }
 
   try {
-    const payload = await getCachedIndexDaily("000001.SH", lookbackDate(15), apiDate(new Date()));
-    if (!payload.rows.length) throw new Error("指数接口未返回数据");
+    const endDate = apiDate(new Date());
+    const [stockPayload, indexPayload] = await Promise.all([
+      getCachedPoolDaily("600036.SH", lookbackDate(15), endDate),
+      getIndexSeries("000001.SH", lookbackDate(140), endDate),
+    ]);
+    if (!stockPayload.rows.length || !indexPayload.rows.length) throw new Error("真实行情接口未返回数据");
+    const usesTencentIndex = indexPayload.source === "tencent";
     return {
       tokenConfigured: true,
       connected: true,
-      lastSuccessAt: payload.fetchedAt,
+      lastSuccessAt: [stockPayload.fetchedAt, indexPayload.fetchedAt].sort().at(-1)!,
       isRealData: true,
-      source: "tushare",
-      dataMode: "close",
-      message: "Tushare Pro 连接正常，当前提供收盘数据",
+      source: usesTencentIndex ? "hybrid" : "tushare",
+      dataMode: usesTencentIndex ? "delayed" : "close",
+      message: usesTencentIndex
+        ? "真实行情连接正常：股票为 Tushare Pro 收盘数据，指数为腾讯延时行情"
+        : "Tushare Pro 连接正常，当前提供收盘数据",
     };
   } catch (error) {
     const message = error instanceof MarketDataError ? error.message : "行情接口未返回数据";

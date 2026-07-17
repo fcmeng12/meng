@@ -1,14 +1,14 @@
 # 见山 A 股雷达
 
-面向电脑和手机的中文 A 股行情研究网站。保留盘前、盘中和盘后三个分析页面，行情由 Next.js 服务端通过 Tushare Pro 获取，Token 不会进入浏览器代码或前端请求。
+面向电脑和手机的中文 A 股行情研究网站。保留盘前、盘中和盘后三个分析页面，行情由 Next.js 服务端优先通过 Tushare Pro 获取；当账户没有 `index_daily` 权限时，三个核心指数自动改用腾讯真实行情。Token 不会进入浏览器代码或前端请求。
 
 > 本网站内容仅用于行情研究和信息展示，不构成任何投资建议。
 
 ## 数据类型与边界
 
-- 数据源：Tushare Pro。
-- 当前接入接口：`daily`、`index_daily`、`stock_basic`。
-- 当前展示的是 **最近可用收盘数据**，不是逐秒实时行情。
+- 数据源：Tushare Pro；指数权限不足时使用腾讯行情作为真实数据备用源。
+- 当前接入接口：Tushare `daily`、`index_daily`、`stock_basic`，以及腾讯指数日线接口。
+- 股票当前展示 **最近可用收盘数据**；腾讯指数按延时行情标注，均不声称逐秒实时。
 - Tushare 日线通常在交易日收盘后入库；盘中页面同样明确展示最近可用收盘快照。
 - Token 缺失、权限不足或接口异常时，页面显示“行情暂时不可用”，不会自动回退为未标注的模拟数据。
 
@@ -55,6 +55,7 @@ lib/market-data/
 ├─ index.ts                     # 统一出口
 ├─ scoring.ts                   # 六因子计算
 ├─ service.ts                   # 行情聚合、行业热度与状态构建
+├─ tencent-index.ts             # 腾讯核心指数备用数据源（仅服务端）
 ├─ tushare-client.ts            # 仅服务端使用的 Tushare HTTP 客户端
 └─ types.ts
 ```
@@ -130,4 +131,4 @@ pnpm build
 
 5. 部署后访问 `/api/market/status`，确认 `connected` 和 `isRealData` 均为 `true`。
 
-Tushare 不同接口可能需要相应积分或权限。当前版本至少需要 `daily`、`index_daily` 和 `stock_basic` 可用；权限不足时网站会显示连接失败，不会伪造行情。
+Tushare 不同接口可能需要相应积分或权限。当前版本至少需要 `daily` 和 `stock_basic` 可用；`index_daily` 不可用时会明确切换到腾讯指数延时行情。所有真实数据源均失败时网站显示连接失败，不会伪造行情。

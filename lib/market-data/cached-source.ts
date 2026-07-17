@@ -1,6 +1,7 @@
 import { unstable_cache } from "next/cache";
+import { queryTencentIndex } from "./tencent-index";
 import { queryTushare } from "./tushare-client";
-import type { TushareDailyRow, TushareStockBasicRow } from "./types";
+import type { DailyBar, TushareDailyRow, TushareStockBasicRow } from "./types";
 
 const DAILY_FIELDS = [
   "ts_code", "trade_date", "open", "high", "low", "close",
@@ -26,6 +27,12 @@ export const getCachedIndexDaily = unstable_cache(
     DAILY_FIELDS,
   )),
   ["tushare-index-daily-v2"],
+  { revalidate: 180 },
+);
+
+export const getCachedTencentIndexDaily = unstable_cache(
+  async (tsCode: string) => withFetchTime<DailyBar>(queryTencentIndex(tsCode)),
+  ["tencent-index-daily-v1"],
   { revalidate: 180 },
 );
 

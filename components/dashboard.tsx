@@ -58,7 +58,7 @@ function Change({ value, compact = false }: { value: number; compact?: boolean }
 }
 
 function Header({ snapshot }: { snapshot: MarketSnapshot }) {
-  const status = snapshot.source === "tushare" ? "真实行情" : "行情连接失败";
+  const status = snapshot.available ? "真实行情" : "行情连接失败";
   return (
     <>
       <header className="site-header">
@@ -90,7 +90,7 @@ function Footer({ snapshot }: { snapshot: MarketSnapshot }) {
       <div className="shell footer-inner">
         <div className="footer-brand"><span className="brand-mark"><i /><i /><i /></span><p><b>见山 A 股雷达</b><span>理性研究 · 尊重风险 · 保持独立判断</span></p></div>
         <p className="footer-warning"><InfoIcon size={15} />本网站内容仅用于行情研究和信息展示，不构成任何投资建议。</p>
-        <span className="footer-meta">{snapshot.available ? "Tushare Pro · 收盘数据" : "行情暂时不可用"}</span>
+        <span className="footer-meta">{snapshot.available ? `${snapshot.sourceLabel} · ${snapshot.dataModeLabel}` : "行情暂时不可用"}</span>
       </div>
     </footer>
   );
@@ -193,7 +193,7 @@ export function Dashboard({ snapshot }: { snapshot: MarketSnapshot }) {
             <p>{snapshot.statusMessage}。系统没有回退到未标注的模拟价格，请检查服务端行情配置后重试。</p>
             <div className="failure-checks">
               <span><b>01</b>确认 Vercel 已配置 TUSHARE_TOKEN</span>
-              <span><b>02</b>确认 Token 拥有 daily、index_daily、stock_basic 权限</span>
+              <span><b>02</b>确认 Token 拥有 daily、stock_basic 权限，并检查腾讯指数连接</span>
               <span><b>03</b>访问 <Link href="/api/market/status">/api/market/status</Link> 检查连接状态</span>
             </div>
           </section>
@@ -230,7 +230,7 @@ export function Dashboard({ snapshot }: { snapshot: MarketSnapshot }) {
         </section>
 
         <section className="indices-section" aria-labelledby="market-title">
-          <div className="section-heading"><div><span className="section-index">01</span><div><p>MARKET OVERVIEW</p><h2 id="market-title">核心指数</h2></div></div><span className="section-note">Tushare Pro 最近可用收盘数据</span></div>
+          <div className="section-heading"><div><span className="section-index">01</span><div><p>MARKET OVERVIEW</p><h2 id="market-title">核心指数</h2></div></div><span className="section-note">{snapshot.source === "hybrid" ? "腾讯指数延时行情 · 股票为 Tushare 收盘数据" : "Tushare Pro 最近可用收盘数据"}</span></div>
           <div className="index-grid">
             {snapshot.indices.map((index) => (
               <article className="index-card" key={index.code}>

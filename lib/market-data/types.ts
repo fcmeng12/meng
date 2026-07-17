@@ -1,7 +1,7 @@
 export type SessionKey = "premarket" | "intraday" | "afterhours";
 export type RiskLevel = "低" | "中" | "高";
 export type DataMode = "close" | "delayed" | "realtime" | "unavailable";
-export type MarketSource = "tushare" | "unavailable";
+export type MarketSource = "tushare" | "hybrid" | "unavailable";
 
 export interface DailyBar {
   tsCode: string;
