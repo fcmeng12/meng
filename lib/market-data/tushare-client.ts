@@ -25,8 +25,25 @@ export class MarketDataError extends Error {
   }
 }
 
+function getTushareToken() {
+  const rawToken = process.env.TUSHARE_TOKEN?.trim();
+  if (!rawToken) return undefined;
+
+  // Be tolerant of values pasted from a .env file into Vercel while keeping
+  // the credential exclusively on the server.
+  const withoutKey = rawToken.replace(/^TUSHARE_TOKEN\s*=\s*/i, "").trim();
+  const quote = withoutKey[0];
+  const token = (
+    (quote === '"' || quote === "'") && withoutKey.at(-1) === quote
+      ? withoutKey.slice(1, -1)
+      : withoutKey
+  ).trim();
+
+  return token || undefined;
+}
+
 export function hasTushareToken() {
-  return Boolean(process.env.TUSHARE_TOKEN?.trim());
+  return Boolean(getTushareToken());
 }
 
 export async function queryTushare<T>(
@@ -34,7 +51,7 @@ export async function queryTushare<T>(
   params: Record<string, TushareScalar>,
   fields: string[],
 ): Promise<T[]> {
-  const token = process.env.TUSHARE_TOKEN?.trim();
+  const token = getTushareToken();
   if (!token) {
     throw new MarketDataError("TOKEN_MISSING", "未配置 TUSHARE_TOKEN");
   }
