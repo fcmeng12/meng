@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { FactorMetrics, MarketSnapshot, RiskLevel, StockCandidate } from "@/lib/market-data";
 import { ActivityIcon, ArrowDownIcon, ArrowUpIcon, ChevronIcon, ClockIcon, FilterIcon, InfoIcon, LayersIcon, SearchIcon, ShieldIcon } from "./icons";
 import { Sparkline } from "./sparkline";
@@ -163,11 +163,46 @@ function CandidateCard({ stock, rank, priceLabel }: { stock: StockCandidate; ran
   );
 }
 
-export function Dashboard({ snapshot }: { snapshot: MarketSnapshot }) {
+export function Dashboard({ snapshot: initialSnapshot }: { snapshot: MarketSnapshot }) {
+  const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [query, setQuery] = useState("");
   const [industry, setIndustry] = useState("全部行业");
   const [risk, setRisk] = useState<"全部" | RiskLevel>("全部");
   const [sort, setSort] = useState("score-desc");
+
+  useEffect(() => {
+    setSnapshot(initialSnapshot);
+  }, [initialSnapshot]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const session = initialSnapshot.insight.key;
+
+    async function refreshSnapshot() {
+      try {
+        const response = await fetch(`/api/market?session=${session}&_=${Date.now()}`, {
+          cache: "no-store",
+        });
+        if (!response.ok) return;
+        const nextSnapshot = await response.json() as MarketSnapshot;
+        if (!cancelled) setSnapshot(nextSnapshot);
+      } catch {
+        // Keep the last successful, clearly timestamped snapshot during transient failures.
+      }
+    }
+
+    const timer = window.setInterval(refreshSnapshot, 60_000);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void refreshSnapshot();
+    };
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [initialSnapshot.insight.key]);
 
   const industries = useMemo(() => ["全部行业", ...Array.from(new Set(snapshot.candidates.map((item) => item.industry)))], [snapshot.candidates]);
   const filteredStocks = useMemo(() => snapshot.candidates

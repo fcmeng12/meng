@@ -53,14 +53,14 @@ function parseMarketStats(values?: string[]): TencentMarketStats | null {
   return advances + flat + declines > 0 ? { advances, declines, flat } : null;
 }
 
-async function queryTencentSeries(tsCode: string): Promise<TencentSeriesResult> {
+async function queryTencentSeries(tsCode: string, days = 80): Promise<TencentSeriesResult> {
   const symbol = toTencentSymbol(tsCode);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12_000);
 
   try {
     const url = new URL("https://web.ifzq.gtimg.cn/appstock/app/fqkline/get");
-    url.searchParams.set("param", `${symbol},day,,,80,qfq`);
+    url.searchParams.set("param", `${symbol},day,,,${days},qfq`);
     const response = await fetch(url, {
       headers: { "User-Agent": "A-Share-Radar/1.0" },
       cache: "no-store",
@@ -120,4 +120,8 @@ export function queryTencentIndex(tsCode: string) {
 
 export function queryTencentStock(tsCode: string) {
   return queryTencentSeries(tsCode);
+}
+
+export function queryTencentStockLatest(tsCode: string) {
+  return queryTencentSeries(tsCode, 2);
 }

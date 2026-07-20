@@ -1,5 +1,10 @@
 import { unstable_cache } from "next/cache";
-import { queryTencentIndex, queryTencentStock, type TencentSeriesResult } from "./tencent-index";
+import {
+  queryTencentIndex,
+  queryTencentStock,
+  queryTencentStockLatest,
+  type TencentSeriesResult,
+} from "./tencent-index";
 import { queryTushare } from "./tushare-client";
 import type { TushareDailyRow, TushareStockBasicRow } from "./types";
 
@@ -48,8 +53,17 @@ export const getCachedTencentStockDaily = unstable_cache(
     ...await queryTencentStock(tsCode),
     fetchedAt: new Date().toISOString(),
   }),
-  ["tencent-stock-daily-v1"],
+  ["tencent-stock-history-v2"],
   { revalidate: 1800 },
+);
+
+export const getCachedTencentStockLatest = unstable_cache(
+  async (tsCode: string): Promise<CachedTencentSeries> => ({
+    ...await queryTencentStockLatest(tsCode),
+    fetchedAt: new Date().toISOString(),
+  }),
+  ["tencent-stock-latest-v1"],
+  { revalidate: 180 },
 );
 
 export const getCachedPoolDaily = unstable_cache(

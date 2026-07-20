@@ -6,6 +6,7 @@ import {
   getCachedStockBasic,
   getCachedTencentIndexDaily,
   getCachedTencentStockDaily,
+  getCachedTencentStockLatest,
 } from "./cached-source";
 import { clamp, createCandidateDraft, finalizeCandidate, type CandidateDraft } from "./scoring";
 import { hasTushareToken, MarketDataError } from "./tushare-client";
@@ -114,10 +115,27 @@ async function getPoolSeries(tsCodes: string[], startDate: string, endDate: stri
       "[market-data] Tushare daily unavailable; using Tencent stock data.",
       tushareError instanceof Error ? tushareError.message : "unknown error",
     );
-    const payloads = await Promise.all(tsCodes.map((tsCode) => getCachedTencentStockDaily(tsCode)));
-    if (payloads.some((payload) => payload.rows.length < 60)) {
+    const [historyPayloads, latestPayloads] = await Promise.all([
+      Promise.all(tsCodes.map((tsCode) => getCachedTencentStockDaily(tsCode))),
+      Promise.all(tsCodes.map((tsCode) => getCachedTencentStockLatest(tsCode))),
+    ]);
+    if (historyPayloads.some((payload) => payload.rows.length < 60)) {
       throw new Error("腾讯股票历史数据不足 60 个交易日");
     }
+
+    const payloads = historyPayloads.map((history, index) => {
+      const latest = latestPayloads[index];
+      const rowsByDate = new Map(history.rows.map((row) => [row.tradeDate, row]));
+      for (const row of latest.rows) rowsByDate.set(row.tradeDate, row);
+      return {
+        ...history,
+        rows: Array.from(rowsByDate.values())
+          .sort((a, b) => a.tradeDate.localeCompare(b.tradeDate))
+          .slice(-80),
+        name: latest.name || history.name,
+        fetchedAt: [history.fetchedAt, latest.fetchedAt].sort().at(-1)!,
+      };
+    });
     return {
       rows: payloads.flatMap((payload) => payload.rows),
       names: new Map(payloads.map((payload, index) => [tsCodes[index], payload.name])),
